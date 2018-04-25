@@ -2,7 +2,7 @@ import ast
 import os
 import collections
 
-from nltk import pos_tag
+from nltk import pos_tag, download
 
 
 def flat(_list):
@@ -16,34 +16,52 @@ def is_verb(word):
     pos_info = pos_tag([word])
     return pos_info[0][1] == 'VB'
 
-Path = ''
 
-def get_trees(_path, with_filenames=False, with_file_content=False):
-    filenames = []
+def only_ext(ext):
+    def compare(file_name): return file_name.endswith(ext)
+    return compare
+
+
+def get_trees_file_names(tree_root_path):
+    file_names = []
+
+    for dir_name, _, files in os.walk(tree_root_path, topdown=True):
+        for file in filter(only_ext('.py'), files):
+            file_names.append(os.path.join(dir_name, file))
+
+    return file_names
+
+
+def get_file_content(file_name):
+    with open(file_name, 'r', encoding='utf-8') as attempt_handler:
+        return attempt_handler.read()
+
+
+def parse_file_content(content):
+    try:
+        return ast.parse(content)
+    except SyntaxError as e:
+        print(e)
+        return None
+
+
+def get_trees(tree_root_path, with_filenames=False, with_file_content=False):
+
     trees = []
-    path= Path
-    for dirname, dirs, files in os.walk(path, topdown=True):
-        for file in files:
-            if file.endswith('.py'):
-                filenames.append(os.path.join(dirname, file))
-                if len(filenames) == 100:
-                    break
-    print('total %s files' % len(filenames))
-    for filename in filenames:
-        with open(filename, 'r', encoding='utf-8') as attempt_handler:
-            main_file_content = attempt_handler.read()
-        try:
-            tree = ast.parse(main_file_content)
-        except SyntaxError as e:
-            print(e)
-            tree = None
+    file_names = get_trees_file_names(tree_root_path)
+
+    print('total %s files' % len(file_names))
+    for filename in file_names:
+        file_content = get_file_content(filename)
+        tree = parse_file_content(file_content)
         if with_filenames:
             if with_file_content:
-                trees.append((filename, main_file_content, tree))
+                trees.append((filename, file_content, tree))
             else:
                 trees.append((filename, tree))
         else:
             trees.append(tree)
+
     print('trees generated')
     return trees
 
@@ -56,42 +74,75 @@ def get_verbs_from_function_name(function_name):
     return [word for word in function_name.split('_') if is_verb(word)]
 
 
+def split_snake_case_name_to_words(name):
+    return [n for n in name.split('_') if n]
+
+
 def get_all_words_in_path(path):
     trees = [t for t in get_trees(path) if t]
     function_names = [f for f in flat([get_all_names(t) for t in trees]) if not (f.startswith('__') and f.endswith('__'))]
-    def split_snake_case_name_to_words(name):
-        return [n for n in name.split('_') if n]
     return flat([split_snake_case_name_to_words(function_name) for function_name in function_names])
 
 
+def get_lower_case_function_names(tree):
+    return [node.name.lower() for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+
+
+def get_flat_lower_case_function_names(trees):
+    return flat([get_lower_case_function_names(t) for t in trees])
+
+
+def get_function_names(path):
+    trees = [t for t in get_trees(path) if t]
+    return [f for f in get_flat_lower_case_function_names(trees) if not (f.startswith('__') and f.endswith('__'))]
+
+
 def get_top_verbs_in_path(path, top_size=10):
-    global Path
-    Path = path
-    trees = [t for t in get_trees(None) if t]
-    fncs = [f for f in flat([[node.name.lower() for node in ast.walk(t) if isinstance(node, ast.FunctionDef)] for t in trees]) if not (f.startswith('__') and f.endswith('__'))]
-    print('functions extracted')
-    verbs = flat([get_verbs_from_function_name(function_name) for function_name in fncs])
+    functions = get_function_names(path)
+    print('functions extracted. count =', len(functions))
+    verbs = flat([get_verbs_from_function_name(function_name) for function_name in functions])
     return collections.Counter(verbs).most_common(top_size)
+
+
 def get_top_functions_names_in_path(path, top_size=10):
-    t = get_trees(path)
-    nms = [f for f in flat([[node.name.lower() for node in ast.walk(t) if isinstance(node, ast.FunctionDef)] for t in t]) if not (f.startswith('__') and f.endswith('__'))]
-    return collections.Counter(nms).most_common(top_size)
+    functions = get_function_names(path)
+    return collections.Counter(functions).most_common(top_size)
 
 
-wds = []
-projects = [
-    'django',
-    'flask',
-    'pyramid',
-    'reddit',
-    'requests',
-    'sqlalchemy',
-]
-for project in projects:
-    path = os.path.join('.', project)
-    wds += get_top_verbs_in_path(path)
+def setup():
+    try:
+        pos_tag(['apple'])
+        print("NLTK data already installed")
+    except LookupError:
+        print("Installing NLTK data...")
+        download('averaged_perceptron_tagger')
 
-top_size = 200
-print('total %s words, %s unique' % (len(wds), len(set(wds))))
-for word, occurence in collections.Counter(wds).most_common(top_size):
-    print(word, occurence)
+
+if __name__ == '__main__':
+
+    setup()
+
+    verbs = []
+    functions = []
+    projects = [
+        'django',
+        'flask',
+        'pyramid',
+        'reddit',
+        'requests',
+        'sqlalchemy',
+    ]
+
+    for project in projects:
+        path = os.path.join('.', project)
+        verbs += get_top_verbs_in_path(path)
+        functions += get_top_functions_names_in_path(path)
+
+    top_size = 200
+    print('total %s verbs, %s unique' % (len(verbs), len(set(verbs))))
+    for verb, occurence in collections.Counter(verbs).most_common(top_size):
+        print(verb, occurence)
+
+    print('total %s functions, %s unique' % (len(functions), len(set(functions))))
+    for func_name, occurence in collections.Counter(functions).most_common(top_size):
+        print(func_name, occurence)
